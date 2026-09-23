@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Note Trainer</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;background:#eee;font-family:Arial,sans-serif;color:#111}
+body{min-height:100vh;display:flex;justify-content:center}
+.app{width:100%;max-width:760px;min-height:100vh;background:#fff;padding:12px}
+h1{text-align:center;font-size:28px;margin:4px 0 6px}
+#status{text-align:center;font-weight:bold;font-size:18px;min-height:25px}
+.center{text-align:center}
+.big{font-size:92px;font-weight:bold;margin:18px 0}
+button{width:100%;padding:15px;margin:7px 0;border:0;border-radius:10px;background:#222;color:#fff;font-size:20px;font-weight:bold}
+button:disabled{opacity:.45}
+.staffbox{border:2px solid #222;border-radius:10px;background:white;padding:4px}
+svg{display:block;width:100%;height:auto}
+#result{font-size:22px;font-weight:bold;text-align:center;min-height:32px;margin:7px 0}
+#heard{text-align:center;font-size:16px;min-height:24px}
+.small{text-align:center;color:#555;font-size:14px;margin:8px 4px;line-height:1.35}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="app">
+<h1>NOTE TRAINER</h1>
+<div id="status">Ready</div>
+
+<div id="setup" class="center">
+  <div style="font-size:21px;font-weight:bold">VOICE SETUP</div>
+  <div class="small">Allow the microphone once. Then say each letter when it appears.</div>
+  <div id="setupLetter" class="big">A</div>
+  <button id="setupButton">START VOICE SETUP</button>
+  <div id="setupHeard"></div>
+</div>
+
+<div id="trainer" class="hidden">
+  <div class="staffbox">
+    <svg id="grand" viewBox="0 0 700 620"></svg>
+  </div>
+  <div id="result">Voice setup complete.</div>
+  <div id="heard"></div>
+  <button id="trainButton">START TRAINING</button>
+  <button id="againButton" class="hidden">LISTEN AGAIN</button>
+</div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+var recognition=null;
+var mode="setup";
+var setupIndex=0;
+var current=null;
+var restarting=false;
+var lastAnswerTime=0;
+
+var letters=["A","B","C","D","E","F","G"];
+
+var setup=document.getElementById("setup");
+var trainer=document.getElementById("trainer");
+var setupLetter=document.getElementById("setupLetter");
+var setupButton=document.getElementById("setupButton");
+var setupHeard=document.getElementById("setupHeard");
+var status=document.getElementById("status");
+var result=document.getElementById("result");
+var heard=document.getElementById("heard");
+var trainButton=document.getElementById("trainButton");
+var againButton=document.getElementById("againButton");
+var grand=document.getElementById("grand");
+
+function speak(t){
+  if(!window.speechSynthesis)return;
+  speechSynthesis.cancel();
+  var u=new SpeechSynthesisUtterance(t);
+  u.lang="en-US"; u.rate=.9;
+  speechSynthesis.speak(u);
+}
+
+function setStatus(t){status.textContent=t}
+
+function recognizedLetter(text){
+  text=text.toUpperCase().trim().replace(/[.!?,]/g,"");
+  var forms={
+    A:["A","AY","AYE"], B:["B","BEE"], C:["C","CEE","SEA"],
+    D:["D","DEE"], E:["E","EE"], F:["F","EFF"], G:["G","GEE"]
+  };
+  for(var i=0;i<letters.length;i++){
+    var L=letters[i];
+    for(var j=0;j<forms[L].length;j++){
+      if(text===forms[L][j]) return L;
+    }
+  }
+  return null;
+}
+
+function buildRecognition(){
+  if(!SR){
+    setStatus("Speech recognition is not supported");
+    result.textContent="Please use Chrome on a supported device.";
+    return false;
+  }
+  if(recognition)return true;
+
+  recognition=new SR();
+  recognition.lang="en-US";
+  recognition.continuous=false;
+  recognition.interimResults=false;
+  recognition.maxAlternatives=5;
+
+  recognition.onstart=function(){
+    restarting=false;
+    setStatus("Listening...");
+  };
+
+  recognition.onresult=function(e){
+    if(!e.results || !e.results.length)return;
+    var r=e.results[e.results.length-1];
+    if(!r.isFinal)return;
+
+    var matched=null;
+    var heardText="";
+    for(var j=0;j<r.length;j++){
+      var t=r[j].transcript.trim();
+      if(j===0)heardText=t;
+      var candidate=recognizedLetter(t);
+      if(candidate){matched=candidate;break;}
+    }
+    process(heardText, matched);
+  };
+
+  recognition.onerror=function(e){
+    if(e.error==="not-allowed"||e.error==="service-not-allowed"){
+      setStatus("Microphone permission needed");
+      result.textContent="Please allow microphone access for this page.";
+      setupHeard.textContent="Then press Start Voice Setup again.";
+    }else if(e.error==="no-speech"){
+      setStatus("Listening...");
+    }else{
+      setStatus("Listening...");
+    }
+  };
+
+  recognition.onend=function(){
+    restarting=false;
+    /*
+      One short listening cycle is used for each answer. If no usable answer
+      was heard, start another cycle. This avoids continuous-recognition
+      buffering, which can cause the next spoken letter to be misread.
+    */
+    if(mode==="setup" || mode==="training"){
+      setTimeout(function(){
+        if(mode==="setup" || mode==="training") startRecognition();
+      },350);
+    }
+  };
+  return true;
+}
+
+function startRecognition(){
+  if(!recognition)return;
+  try{recognition.start()}catch(e){}
+}
+
+function process(text, recognized){
+  var answer=recognized || recognizedLetter(text);
+  var now=Date.now();
+  if(now-lastAnswerTime<700)return;
+
+  if(mode==="setup"){
+    var expected=letters[setupIndex];
+    setupHeard.textContent="Heard: "+text;
+
+    if(answer===expected){
+      lastAnswerTime=now;
+      setupIndex++;
+
+      if(setupIndex===letters.length){
+        mode="ready";
+        setup.classList.add("hidden");
+        trainer.classList.remove("hidden");
+        setStatus("Voice setup complete");
+        result.textContent="Voice setup complete.";
+        speak("Voice setup is complete.");
+      }else{
+        setupLetter.textContent=letters[setupIndex];
+        setupHeard.textContent="Correct. Now say "+letters[setupIndex]+".";
+        speak("Correct. Now say "+letters[setupIndex]+".");
+        setTimeout(startRecognition,1000);
+      }
+    }
+    return;
+  }
+
+  if(mode!=="training")return;
+
+  heard.textContent="Heard: "+text;
+
+  if(answer===current.letter){
+    lastAnswerTime=now;
+    result.textContent="✓ Correct!";
+    setStatus("Correct");
+    speak("Correct");
+    setTimeout(newNote,650);
+  }else if(answer){
+    result.textContent="Try again.";
+    setStatus("Not quite");
+    speak("Try again.");
+  }
+}
+
+/* Exact training ranges:
+   Treble C4-F5
+   Bass G2-C4
+*/
+var treble={
+ C4:300,D4:285,E4:270,F4:255,G4:240,A4:225,B4:210,
+ C5:195,D5:180,E5:165,F5:150
+};
+var bass={
+ G2:570,A2:555,B2:540,C3:525,D3:510,E3:495,F3:480,
+ G3:465,A3:450,B3:435,C4:420
+};
+
+var notes=[
+"C4","D4","E4","F4","G4","A4","B4","C5","D5","E5","F5",
+"G2","A2","B2","C3","D3","E3","F3","G3","A3","B3","C4"
+];
+
+function el(n){return document.createElementNS("http://www.w3.org/2000/svg",n)}
+
+function line(x1,y1,x2,y2,w){
+ var e=el("line");
+ e.setAttribute("x1",x1);e.setAttribute("y1",y1);
+ e.setAttribute("x2",x2);e.setAttribute("y2",y2);
+ e.setAttribute("stroke","#111");e.setAttribute("stroke-width",w||3);
+ grand.appendChild(e);
+}
+
+function text(x,y,t,size){
+ var e=el("text");
+ e.setAttribute("x",x);e.setAttribute("y",y);
+ e.setAttribute("font-family","serif");e.setAttribute("font-size",size);
+ e.textContent=t;grand.appendChild(e);
+}
+
+function staff(clef,note){
+ var map=clef==="treble"?treble:bass;
+ var ys=clef==="treble"?[150,165,180,195,210]:[460,475,490,505,520];
+
+ for(var i=0;i<5;i++)line(75,ys[i],660,ys[i],3);
+
+ if(clef==="treble")text(88,215,"𝄞",100);
+ else text(88,525,"𝄢",88);
+
+ if(!note)return;
+
+ var y=map[note],x=390;
+ if(y===undefined)return;
+
+ if(clef==="treble"){
+   if(y<150)for(var a=135;a>=y-2;a-=15)line(x-32,a,x+32,a,3);
+   if(y>210)for(var b=225;b<=y+2;b+=15)line(x-32,b,x+32,b,3);
+ }else{
+   if(y<460)for(var c=445;c>=y-2;c-=15)line(x-32,c,x+32,c,3);
+   if(y>520)for(var d=535;d<=y+2;d+=15)line(x-32,d,x+32,d,3);
+ }
+
+ var n=el("ellipse");
+ n.setAttribute("cx",x);n.setAttribute("cy",y);
+ n.setAttribute("rx",22);n.setAttribute("ry",15);
+ n.setAttribute("fill","#111");
+ n.setAttribute("transform","rotate(-20 "+x+" "+y+")");
+ grand.appendChild(n);
+
+ var up=(clef==="treble"?y<=180:y<=490);
+ var sx=up?x-20:x+20;
+ line(sx,y,sx,up?y+78:y-78,4);
+}
+
+function draw(){
+  const svg=document.getElementById("grand");
+  svg.innerHTML="";
+
+  const NS="http://www.w3.org/2000/svg";
+  const x0=85, x1=675;
+  const topLine=95;
+  const lineGap=15;
+
+  // Correct grand staff:
+  // Treble staff: 5 lines at y=95..155
+  // Bass staff:    5 lines at y=245..305
+  // ONE shared middle-C ledger line between the staffs at y=170.
+  for(let i=0;i<5;i++){
+    const y=topLine+i*lineGap;
+    const l=document.createElementNS(NS,"line");
+    l.setAttribute("x1",x0); l.setAttribute("x2",x1);
+    l.setAttribute("y1",y); l.setAttribute("y2",y);
+    l.setAttribute("stroke","#111"); l.setAttribute("stroke-width","2");
+    svg.appendChild(l);
+  }
+
+  const bassTop=245;
+  for(let i=0;i<5;i++){
+    const y=bassTop+i*lineGap;
+    const l=document.createElementNS(NS,"line");
+    l.setAttribute("x1",x0); l.setAttribute("x2",x1);
+    l.setAttribute("y1",y); l.setAttribute("y2",y);
+    l.setAttribute("stroke","#111"); l.setAttribute("stroke-width","2");
+    svg.appendChild(l);
+  }
+
+  // Clefs
+  const tc=document.createElementNS(NS,"text");
+  tc.setAttribute("x",95); tc.setAttribute("y",151);
+  tc.setAttribute("font-size","82");
+  tc.textContent="𝄞";
+  svg.appendChild(tc);
+
+  const bc=document.createElementNS(NS,"text");
+  bc.setAttribute("x",98); bc.setAttribute("y",298);
+  bc.setAttribute("font-size","68");
+  bc.textContent="𝄢";
+  svg.appendChild(bc);
+
+  if(!current) return;
+
+  const noteX=430;
+  let y;
+
+  // Staff positions use the same musical spacing:
+  // Treble: C4 is the single ledger line between staffs.
+  // Bass: C4 is the same single ledger line.
+  const trebleY={
+    C4:170,D4:162.5,E4:155,F4:147.5,G4:140,A4:132.5,B4:125,
+    C5:117.5,D5:110,E5:102.5,F5:95
+  };
+
+  const bassY={
+    G2:305,A2:297.5,B2:290,C3:282.5,D3:275,E3:267.5,F3:260,
+    G3:252.5,A3:245,B3:237.5,C4:170
+  };
+
+  y = current.clef==="treble" ? trebleY[current.name] : bassY[current.name];
+
+  // Middle C has exactly ONE ledger line.
+  if(current.name==="C4"){
+    const ledger=document.createElementNS(NS,"line");
+    ledger.setAttribute("x1",noteX-32);
+    ledger.setAttribute("x2",noteX+32);
+    ledger.setAttribute("y1",170);
+    ledger.setAttribute("y2",170);
+    ledger.setAttribute("stroke","#111");
+    ledger.setAttribute("stroke-width","2");
+    svg.appendChild(ledger);
+  }
+
+  // Ledger lines for low bass notes below the bass staff.
+  const lowLedger={
+    G2:[320], A2:[312.5], B2:[320-15]
+  };
+  if(current.clef==="bass" && lowLedger[current.name]){
+    for(const ly of lowLedger[current.name]){
+      const ledger=document.createElementNS(NS,"line");
+      ledger.setAttribute("x1",noteX-30);
+      ledger.setAttribute("x2",noteX+30);
+      ledger.setAttribute("y1",ly);
+      ledger.setAttribute("y2",ly);
+      ledger.setAttribute("stroke","#111");
+      ledger.setAttribute("stroke-width","2");
+      svg.appendChild(ledger);
+    }
+  }
+
+  const note=document.createElementNS(NS,"ellipse");
+  note.setAttribute("cx",noteX);
+  note.setAttribute("cy",y);
+  note.setAttribute("rx","24");
+  note.setAttribute("ry","17");
+  note.setAttribute("fill","#111");
+  svg.appendChild(note);
+
+  const stem=document.createElementNS(NS,"line");
+  stem.setAttribute("x1",noteX+21);
+  stem.setAttribute("x2",noteX+21);
+  stem.setAttribute("y1",y);
+  stem.setAttribute("y2",y-65);
+  stem.setAttribute("stroke","#111");
+  stem.setAttribute("stroke-width","3");
+  svg.appendChild(stem);
+}
+
+function newNote(){
+ var n;
+ do{
+   n=notes[Math.floor(Math.random()*notes.length)];
+ }while(current&&n===current.name);
+
+ current={
+   name:n,
+   letter:n.charAt(0),
+   clef:treble[n]!==undefined?"treble":"bass"
+ };
+ draw();
+ result.textContent="Say the note.";
+ heard.textContent="";
+ setStatus("Listening...");
+}
+
+/*
+  The ONLY explicit permission-triggering action is recognition.start()
+  from the user's Start Voice Setup click. There is no getUserMedia call
+  anywhere in the program.
+*/
+setupButton.onclick=function(){
+ if(!buildRecognition())return;
+ setupButton.disabled=true;
+ mode="setup";
+ setupIndex=0;
+ setupLetter.textContent="A";
+ setStatus("Listening...");
+ speak("Voice setup. Say A.");
+ setTimeout(startRecognition,1000);
+};
+
+trainButton.onclick=function(){
+ if(!buildRecognition())return;
+ mode="training";
+ trainButton.classList.add("hidden");
+ againButton.classList.remove("hidden");
+ speak("Look at the note and say its name.");
+ setTimeout(newNote,900);
+ startRecognition();
+};
+
+againButton.onclick=function(){
+ result.textContent="Listening...";
+ heard.textContent="";
+ setTimeout(startRecognition,250);
+};
+
+})();
+</script>
+</body>
+</html>
