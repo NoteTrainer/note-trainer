@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Note Trainer V36A - Web Version</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;background:#fff;font-family:Arial,sans-serif;color:#111}
+body{min-height:100vh;display:block;width:100%;}
+.app{width:100%;max-width:none;min-height:100vh;background:#fff;padding:12px}
+h1{text-align:center;font-size:28px;margin:4px 0 6px}
+#status{text-align:center;font-weight:bold;font-size:18px;min-height:25px}
+.center{text-align:center}
+.big{font-size:92px;font-weight:bold;margin:18px 0}
+button{width:100%;padding:15px;margin:7px 0;border:0;border-radius:10px;background:#222;color:#fff;font-size:20px;font-weight:bold}
+button:disabled{opacity:.45}
+.staffbox{border:2px solid #222;border-radius:10px;background:white;padding:4px}
+svg{display:block;width:100%;height:auto}
+#result{font-size:22px;font-weight:bold;text-align:center;min-height:32px;margin:7px 0}
+#heard{text-align:center;font-size:16px;min-height:24px}
+.small{text-align:center;color:#555;font-size:14px;margin:8px 4px;line-height:1.35}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="app">
+<h1>NOTE TRAINER</h1>
+<div id="status">Ready</div>
+
+<div id="setup" class="center">
+  <div style="font-size:21px;font-weight:bold">VOICE SETUP</div>
+  <div class="small">Allow the microphone once. Then say each letter when it appears.</div>
+  <div id="setupLetter" class="big">A</div>
+  <button id="setupButton">START VOICE SETUP</button>
+  <div id="setupHeard"></div>
+</div>
+
+<div id="trainer" class="hidden">
+  <div class="staffbox">
+    <svg id="grand" viewBox="0 0 700 620"></svg>
+  </div>
+  <div id="debugNote" style="text-align:center;font-size:28px;font-weight:bold;margin:6px 0;">PROGRAM NOTE: —</div>
+   <div id="result">Voice setup complete.</div>
+  <div id="heard"></div>
+  <button id="trainButton">START TRAINING</button>
+  <button id="againButton" class="hidden">LISTEN AGAIN</button>
+</div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+var recognition=null;
+var micStream=null;
+var mode="setup";
+var setupIndex=0;
+var current=null;
+var listening=false;
+var shouldListen=false;
+var lastAnswerTime=0;
+var processingAnswer=false;
+
+var letters=["A","B","C","D","E","F","G"];
+
+var setup=document.getElementById("setup");
+var trainer=document.getElementById("trainer");
+var setupLetter=document.getElementById("setupLetter");
+var setupButton=document.getElementById("setupButton");
+var setupHeard=document.getElementById("setupHeard");
+var status=document.getElementById("status");
+var result=document.getElementById("result");
+var heard=document.getElementById("heard");
+var trainButton=document.getElementById("trainButton");
+var againButton=document.getElementById("againButton");
+var grand=document.getElementById("grand");
+var debugNote=document.getElementById("debugNote");
+
+function speak(t, done){
+  if(!window.speechSynthesis){
+    if(done)done();
+    return;
+  }
+  speechSynthesis.cancel();
+  var u=new SpeechSynthesisUtterance(t);
+  u.lang="en-US";
+  u.rate=.9;
+  u.onend=function(){if(done)done();};
+  u.onerror=function(){if(done)done();};
+  speechSynthesis.speak(u);
+}
+
+function setStatus(t){status.textContent=t}
+
+function recognizedLetter(alts){
+  const forms={
+    A:["a","ay","aye"],
+    B:["b","bee","be"],
+    C:["c","cee","sea","see"],
+    D:["d","dee","de"],
+    E:["e","ee"],
+    F:["f","eff","of","off"],
+    G:["g","gee"]
+  };
+  for(const alt of (alts||[])){
+    const s=String(alt).toLowerCase().trim().replace(/[^a-z]/g,"");
+    if(s==="c"||s==="cee"||s==="see"||s==="sea")return "C";
+    for(const letter of Object.keys(forms)){
+      if(forms[letter].includes(s))return letter;
+    }
+  }
+  return null;
+}
+
+function buildRecognition(){
+  if(!SR){
+    setStatus("Speech recognition is not supported");
+    result.textContent="Please use Chrome on a supported device.";
+    return false;
+  }
+  if(recognition)return true;
+
+  recognition=new SR();
+  recognition.lang="en-US";
+  recognition.continuous=false;
+  recognition.interimResults=false;
+  recognition.maxAlternatives=5;
+
+  recognition.onstart=function(){
+    listening=true;
+    setStatus("Listening...");
+  };
+
+  recognition.onresult=function(e){
+    if(!e.results||!e.results.length)return;
+    var r=e.results[e.results.length-1];
+    if(!r.isFinal)return;
+
+    var heardFinal=(r[0]&&r[0].transcript?r[0].transcript.trim():"");
+    if(!heardFinal)return;
+
+    var matched=recognizedLetter([heardFinal]);
+    if(!matched){
+      for(var j=1;j<r.length;j++){
+        var candidate=recognizedLetter([r[j].transcript.trim()]);
+        if(candidate){matched=candidate;break;}
+      }
+    }
+
+    // Stop listening BEFORE speaking any feedback.
+    shouldListen=false;
+    try{recognition.stop();}catch(e){}
+    process(heardFinal,matched);
+  };
+
+  recognition.onerror=function(e){
+    listening=false;
+    if(e.error==="not-allowed"||e.error==="service-not-allowed"){
+      shouldListen=false;
+      setStatus("Microphone permission needed");
+      result.textContent="Microphone access was not allowed.";
+      setupHeard.textContent="Tap START VOICE SETUP and choose Allow.";
+      setupButton.disabled=false;
+    }else if(e.error==="no-speech"){
+      setStatus("No speech heard");
+      if(mode==="setup"){
+        setupHeard.textContent="I didn't hear you. Say "+letters[setupIndex]+".";
+        setTimeout(function(){if(shouldListen)startRecognition();},250);
+      }else if(mode==="training"){
+        result.textContent="I didn't hear a note.";
+        setTimeout(function(){if(shouldListen)startRecognition();},250);
+      }
+    }else{
+      setStatus("Microphone error");
+      if(mode==="setup")setupButton.disabled=false;
+    }
+  };
+
+  recognition.onend=function(){
+    listening=false;
+    if(shouldListen){
+      setTimeout(function(){
+        if(shouldListen&&!listening)startRecognition();
+      },200);
+    }
+  };
+  return true;
+}
+
+function startRecognition(){
+  if(!recognition||listening)return;
+  try{recognition.start();}catch(e){}
+}
+
+function stopRecognition(){
+  shouldListen=false;
+  if(recognition&&listening){
+    try{recognition.stop();}catch(e){}
+  }
+}
+
+function process(text,recognized){
+  var answer=recognized||null;
+  var now=Date.now();
+  if(now-lastAnswerTime<700)return;
+
+  if(mode==="setup"){
+    var expected=letters[setupIndex];
+    lastAnswerTime=now;
+    setupHeard.textContent="Heard: "+text+"  →  saved as "+expected;
+    setupIndex++;
+
+    if(setupIndex===letters.length){
+      mode="ready";
+      shouldListen=false;
+      setup.classList.add("hidden");
+      trainer.classList.remove("hidden");
+      setStatus("Voice setup complete");
+      result.textContent="Voice setup complete.";
+      speak("Voice setup is complete.");
+    }else{
+      setupLetter.textContent=letters[setupIndex];
+      setupHeard.textContent="Saved. Now say "+letters[setupIndex]+".";
+      setTimeout(function(){
+        if(mode==="setup"){
+          shouldListen=true;
+          startRecognition();
+        }
+      },250);
+    }
+    return;
+  }
+
+  if(mode!=="training")return;
+
+  heard.textContent="Heard: "+text+(answer?" → "+answer:"");
+
+  if(answer===current.letter){
+    lastAnswerTime=now;
+    processingAnswer=true;
+    shouldListen=false;
+    result.textContent="✓ Correct!";
+    setStatus("Correct");
+    speak("Correct",function(){
+      processingAnswer=false;
+      setTimeout(newNote,250);
+    });
+  }else if(answer){
+    processingAnswer=true;
+    shouldListen=false;
+    result.textContent="Try again.";
+    setStatus("Not quite");
+    speak("Try again.",function(){
+      processingAnswer=false;
+      setTimeout(function(){
+        if(mode==="training"){
+          shouldListen=true;
+          startRecognition();
+        }
+      },250);
+    });
+  }
+}
+
+/* Exact training ranges:
+   Treble C4-F5
+   Bass G2-C4
+*/
+var treble={
+ C4:175,D4:167.5,E4:160,F4:152.5,G4:145,A4:137.5,B4:130,
+ C5:122.5,D5:115,E5:107.5,F5:100
+};
+var bass={
+ G2:250,A2:242.5,B2:235,C3:227.5,D3:220,E3:212.5,F3:205,
+ G3:197.5,A3:190,B3:182.5,C4:175
+};
+
+var notes=[
+"C4","D4","E4","F4","G4","A4","B4","C5","D5","E5","F5",
+"G2","A2","B2","C3","D3","E3","F3","G3","A3","B3","C4"
+];
+
+function el(n){return document.createElementNS("http://www.w3.org/2000/svg",n)}
+
+function line(x1,y1,x2,y2,w){
+ var e=el("line");
+ e.setAttribute("x1",x1);e.setAttribute("y1",y1);
+ e.setAttribute("x2",x2);e.setAttribute("y2",y2);
+ e.setAttribute("stroke","#111");e.setAttribute("stroke-width",w||3);
+ grand.appendChild(e);
+}
+
+function text(x,y,t,size){
+ var e=el("text");
+ e.setAttribute("x",x);e.setAttribute("y",y);
+ e.setAttribute("font-family","serif");e.setAttribute("font-size",size);
+ e.textContent=t;grand.appendChild(e);
+}
+
+function addRefImage(href,x,y,w,h){
+ var im=el("image");
+ im.setAttribute("href",href);
+ im.setAttribute("x",x);im.setAttribute("y",y);
+ im.setAttribute("width",w);im.setAttribute("height",h);
+ im.setAttribute("preserveAspectRatio","none");
+ grand.appendChild(im);
+}
+
+var TREBLE_REF="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADkAAAB9CAYAAAAY0cv/AAAHf0lEQVR4nO2ce4hVRRzHP9d719Vtt90KUey1PQi0yDJ6UGT2RyFYUVHQy+zlH1EUBYGagkRGaYYSZQ9NNIMoioqiyCAy/4hMMLMopTJEozLMStd9nv6YM53Z2Zk573Ovu+cLw7ln5je/xzlnXr/5zYUShaGz3grkiUWAp6TOeiqTB95lsIEyTamnUlliJWYDZarVT7VsMBu3gR7wUd20ywCnEG6gTB1ZCa1kxSgiBmLKzES/UVkwiYgHia/08XkokheqRP9M1fRNPZRNiodIZqRXD2WTIOlblGla8SrHx3SiGfOYJX9D4RonwBtE/yQ7Q8obFlENlD3vYgNNexoFihxCTDhK+S0N3mKgm5hGSN5GXuIoewQ4ZMjfZshr6Dd5tqPsaUv+H4a8sWmUyNvIEyz59zrqVA15qVYleRt5rCV/jaNOpyGvOY0SeRkpe8o2Q9lqoNuQP9q/Xm0oa0qjTA0YhzB2wM/rV357/r2a7ynlo5TyKsK4sUALolMZb5D5AXCS/7vHv44GxgD/AvMMdboQD6yH4AFVFZlVghfWq1eucIQMtmlQ73GyEIwII2uIjgBEO+tHfL69QJ9/30fQNtV2WVHoZX0Q7WsU8BdwM3ChJvMe4FS/bgXRfqcDUx16Po4Yjg4Af2ploxBtsuYnvY32kzOmYZ6rthP0phA8ONf8NvEwkvfnuseSf5igZ12J2y3yqn81DTsNgVbMb6XVvz5sKM/Na5cndKVbEGPzi4ayI3ItCWalNxryTWlmFgoU4XdN8zaOOL9rXNxZbwXi4HuGsSsS4H2SGXhpPZSNCtmGTENH1LQwD6XuQMw+5IpcTufksqbLz5MD+IBP34yYRjX5dfcCvwIvA1em0OlWhOOqFdFndCGWbVKHLp9O6ivlV3x6ubKS1/5yqTVcMCKMTIv1JO9gPOCu4lWOh02kM3By8SrHwxbSGegBEwrXOgbSvkGZCtt3jNvxbMC9v+GC7t64LCGfXLGCZG9stcJDzbd5DeqGu0lm4CyNz6daecPgRJIZeJGB1zKNptVAUygqftpPfAPPsPC8RaO7Kj/1A7g6Hg/hN+2IyfMYYIelbJN2f0FM3olQAZYgnMm9BM7kXuA3YF1Mfi8hxlC5gbQPYfAuxDbeHGCBpe4e4B1guy9fbgLJ5ZvahuVmj7pRpcLz7agBlXIVMlwwIoysANcg2kCVYFNnLdHmlp8gNk1lu+gDZgBPZa4p7EYEBLchNpMOEXgEmgjabpN2tSLKMPEDQ/2iLRHrJk3LQx9FDEQR2G6o92XORnqk8x/9j/MjCDItdi8uwECZUnvW748gxISdBRppCk2zwtS7miI2VMw15LUAp8cRnBKuXekhMBl5dEidJYa8GRHlLUVsi5+n5a9EPKhrET12FCyPSGfE88T/VDeE1PEQbVaiXSuTQ5AML4vavhPDtTjer9HKDuBgiDJTDHLCFJ4awjOykernKgMVdjnov1V+VxFvpBnxqdmwEPhauW9GPJwvHHUqiIn6ow4asMfuhcIVGL/YUudvRx0bHtDoTNGROPhGfpPlKmS4YEQYWQM2E4SZ1RAd0D/A5ZY6cxGfeBti5d6DaJNPWui/Ao7z6Xr9OmMRIWT6VsF2xN6k2qH0MDh6S8UOhb9ckcj2LaO8nGFn6wgf71QstdC7oHvvbA/Wti1vChqODRPjnRZaW6+81i83TapnWmh1/G7hnQlMB1E87KcEJlnoT7HQ6z7dwxa6zGc8aQUssNCbzkKOjsD3XAu/uJ5EJ2xHdJ9w1JlvqaM6k+Xg/xluI9dYeGW+6plnETTfUecsA70anyON1CMlJSrYJ+oHU1njgG11siKk3nhEW7VB/xxn+/kTLPI8hkZDZ4pnLEK7EeGdSaHy2oh4MDYDV6WQExmzHQqsI9lh620OnmraSoJzW0kdQpOA70JongM+RkRp7UNEUqnTyArB7OdzwjeWXgNuI/APR0YFeNP/LRu9eqpggMEnC2r+9QBib/G+OMJSYDfwAuKhyHC0ZsT5yzEEnZi6adXn59XKpdZwwYgwsoKYWqmHMGVb7GfoQ+gn2ACt+dcmn16etJE8ugnahQ01hH9oL2JiobpXTiY4OwJB3yCXUDrUk4DSNiy0dcN0Bg8XmQUzNdLnulW7vz4rxkX/VU0Y9E9rWB6Z+DEPpnkYORE4jWR/gPBexrpkDtvhslXYHcc6Zml1i9wpc6KDaJPrGyPw0jeAb8pe3fiIe/7jhhB++hJrUR5Kx0U38Yz0cJ9o1R/a+iyUTNPxzMLu9HVhmSXfNFx0JuCfKeK+QZMfR0WVoe37lywUTfom84pT1fc5h/z7QxIkNfLMLIRr6GdoFNgrWTBOamR7FsINOEe7/zALpkmN3J9C5u2OMv0M808p5GSCLDsdEMETUWkLw1tkZyCISGmV1rZFWCiaiW7c67jnr5s1+oY6M3IF4QZOJnCZ6Giz1Gk4zCHc0IWI5ReImc11DtpU/1GXJ6KEj0ZJHQXrnQhvk8y4qEGDDYUoMbMe8GwRyhThyBqH8KHWEEuznxGB8iVKlChRokSJEiVKlChRokSJeuM/dlV/NGnACZQAAAAASUVORK5CYII=";
+var BASS_REF="data:image/png;base64,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";
+var BRACE_REF="data:image/png;base64,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";
+
+function staff(clef,note){
+ var map=clef==="treble"?treble:bass;
+ var ys=clef==="treble"?[100,115,130,145,160]:[190,205,220,235,250];
+
+ for(var i=0;i<5;i++)line(75,ys[i],660,ys[i],3);
+
+ // These clef shapes are taken directly from the user's supplied reference
+ // image, so their proportions and appearance match the requested example.
+ if(clef==="treble"){
+   addRefImage(TREBLE_REF,78,82,60,132);
+ }else{
+   addRefImage(BASS_REF,78,180,69,91);
+ }
+
+ if(!note)return;
+
+ var y=map[note],x=390;
+ if(y===undefined)return;
+
+ // Ledger line for middle C only.
+ if(note==="C4") line(x-32,175,x+32,175,3);
+
+ // Extra ledger lines for notes outside the staff.
+ if(clef==="treble"){
+   if(y<100)for(var a=85;a>=y-2;a-=15)line(x-32,a,x+32,a,3);
+ }else{
+   if(y>250)for(var b=265;b<=y+2;b+=15)line(x-32,b,x+32,b,3);
+ }
+
+ var n=el("ellipse");
+ n.setAttribute("cx",x);n.setAttribute("cy",y);
+ n.setAttribute("rx",22);n.setAttribute("ry",15);
+ n.setAttribute("fill","#111");
+ n.setAttribute("transform","rotate(-20 "+x+" "+y+")");
+ grand.appendChild(n);
+
+ var up=(clef==="treble"?y<=130:y>=205);
+ var sx=up?x-20:x+20;
+ line(sx,y,sx,up?y+78:y-78,4);
+}
+
+function draw(){
+ while(grand.firstChild)grand.removeChild(grand.firstChild);
+ staff("treble",current&&current.clef==="treble"?current.name:null);
+ staff("bass",current&&current.clef==="bass"?current.name:null);
+}
+
+function newNote(){
+ var n;
+ do{
+   n=notes[Math.floor(Math.random()*notes.length)];
+ }while(current&&n===current.name);
+
+ current={
+   name:n,
+   letter:n.charAt(0),
+   clef:treble[n]!==undefined?"treble":"bass"
+ };
+ debugNote.textContent="PROGRAM NOTE: "+current.letter+" ("+current.name+")";
+ draw();
+ result.textContent="Say the note.";
+ heard.textContent="";
+ setStatus("Listening...");
+}
+
+/*
+  The ONLY explicit permission-triggering action is recognition.start()
+  from the user's Start Voice Setup click. There is no getUserMedia call
+  anywhere in the program.
+*/
+setupButton.onclick=function(){
+  if(!buildRecognition())return;
+  setupButton.disabled=true;
+  mode="setup";
+  setupIndex=0;
+  setupLetter.textContent="A";
+  setupHeard.textContent="Starting microphone…";
+  setStatus("Starting microphone...");
+  shouldListen=true;
+  startRecognition();
+};
+
+trainButton.onclick=function(){
+  if(!buildRecognition())return;
+  mode="training";
+  trainButton.classList.add("hidden");
+  againButton.classList.remove("hidden");
+  stopRecognition();
+  speak("Look at the note and say its name.",function(){
+    setTimeout(function(){
+      if(mode==="training"){
+        newNote();
+        shouldListen=true;
+        startRecognition();
+      }
+    },200);
+  });
+};
+
+againButton.onclick=function(){
+  if(mode!=="training")return;
+  stopRecognition();
+  result.textContent="Listening...";
+  heard.textContent="";
+  setTimeout(function(){
+    shouldListen=true;
+    startRecognition();
+  },200);
+};
+
+})();
+</script>
+</body>
+</html>
