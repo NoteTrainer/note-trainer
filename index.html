@@ -316,14 +316,17 @@ function staff(clef,note){
  var map=clef==="treble"?treble:bass;
  var ys=clef==="treble"?[100,115,130,145,160]:[190,205,220,235,250];
 
- for(var i=0;i<5;i++)line(75,ys[i],660,ys[i],3);
-
- // These clef shapes are taken directly from the user's supplied reference
- // image, so their proportions and appearance match the requested example.
+ /*
+  The supplied clef reference images already contain the short staff
+  lines beside the clefs. Do NOT draw a second set underneath them.
+  Draw only the continuation of the staff to the right.
+ */
  if(clef==="treble"){
-   addRefImage(TREBLE_REF,78,76,60,132);
+   addRefImage(TREBLE_REF,78,76,60,130);
+   for(var i=0;i<5;i++)line(138,ys[i],660,ys[i],3);
  }else{
    addRefImage(BASS_REF,78,181.5,69,91);
+   for(var j=0;j<5;j++)line(147,ys[j],660,ys[j],3);
  }
 
  if(!note)return;
@@ -343,21 +346,21 @@ function staff(clef,note){
 
  var n=el("ellipse");
  n.setAttribute("cx",x);n.setAttribute("cy",y);
- n.setAttribute("rx",22);n.setAttribute("ry",15);
+ n.setAttribute("rx",22);n.setAttribute("ry",16);
  n.setAttribute("fill","#111");
- n.setAttribute("transform","rotate(-20 "+x+" "+y+")");
  grand.appendChild(n);
 
- var up=(clef==="treble"?y<=130:y>=205);
- var sx=up?x-20:x+20;
- line(sx,y,sx,up?y+78:y-78,4);
-}
-
-function draw(){
- while(grand.firstChild)grand.removeChild(grand.firstChild);
- staff("treble",current&&current.clef==="treble"?current.name:null);
- staff("bass",current&&current.clef==="bass"?current.name:null);
-}
+ var stem=el("line");
+ stem.setAttribute("stroke","#111");stem.setAttribute("stroke-width","3");
+ if(clef==="treble" || y>=220){
+   stem.setAttribute("x1",x+21);stem.setAttribute("x2",x+21);
+   stem.setAttribute("y1",y);stem.setAttribute("y2",y-70);
+ }else{
+   stem.setAttribute("x1",x-21);stem.setAttribute("x2",x-21);
+   stem.setAttribute("y1",y);stem.setAttribute("y2",y+70);
+ }
+ grand.appendChild(stem);
+} 
 
 function newNote(){
  var n;
